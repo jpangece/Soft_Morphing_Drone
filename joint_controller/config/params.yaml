@@ -1,0 +1,13 @@
+motor:
+ baud: 57600
+ kp: 1000
+ ki: 0.01
+ kd: 2400
+ count: 4
+ init_pos: 0
+controller:
+ enable: 1
+ M: 0.001
+ B: 0.05
+ K: 0.005
+node_rate: 50
