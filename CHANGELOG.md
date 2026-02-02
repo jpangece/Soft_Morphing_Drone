@@ -15,7 +15,7 @@ This log tracks the evolution of the soft segment used in the drone arm.
 
 ## Version 2 — Cut Shape
 
-![Version 2](soft4mm_ver2.jpg)
+![Version 2](images/soft4mm_ver2.jpg)
 
 - Introduced cut geometry to increase flexibility
 - Deformation improved significantly
@@ -32,7 +32,7 @@ Conclusion:
 
 ## Version 3 — Revised Cut Shape (soft4mm_ver3.jpg)
 
-![Version 3](soft4mm_ver3.jpg)
+![Version 3](images/soft4mm_ver3.jpg)
 
 - Geometry adjusted to recover some stiffness
 - Rotor-induced vibration reduced
