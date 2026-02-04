@@ -18,8 +18,7 @@ public:
     if (!wb_.begin(device_.c_str(), baud_))
     { ROS_ERROR("Failed to open %s @ %u", device_.c_str(), baud_); return false; }
 
-    for (auto id 
-      .: ids_)
+    for (auto id : ids_)
       if (!wb_.ping(id)) { ROS_ERROR("Ping failed for ID %u", (unsigned)id); return false; }
 
     const char* log = nullptr;
@@ -60,13 +59,15 @@ public:
       wb_.torqueOff(id);
 
       // ===== Current Control Mode =====
-      // 0: Current Control
+      // 0: Current Control (X series incl. XL-330)
       wb_.itemWrite(id, "Operating_Mode", 0);
 
       wb_.torqueOn(id);
+
+      // Print mode to confirm
       int32_t mode = -1;
       if (wb_.itemRead(id, "Operating_Mode", &mode))
-        ROS_INFO("[DxlBus] ID %u Operating_Mode = %d (expect 0 for Current Control)", (unsigned)id, (int)mode);
+        ROS_WARN("[DxlBus] ID %u Operating_Mode=%d (expect 0 = Current Control)", (unsigned)id, (int)mode);
       else
         ROS_WARN("[DxlBus] ID %u failed to read Operating_Mode", (unsigned)id);
     }
@@ -96,8 +97,7 @@ public:
       const double pos_rad = wb_.convertValue2Radian(id, raw_pos_[i]);
       states[i].position_deg = pos_rad * 180.0 / M_PI;
 
-      // Velocity: raw -> (toolbox conversion) -> rad/s
-      // If your toolbox returns "rev/min" or something else, this is the only line to adjust.
+      // Velocity: raw -> rad/s (toolbox conversion)
       states[i].velocity = wb_.convertValue2Velocity(id, raw_vel_[i]);
 
       // Current: mA
