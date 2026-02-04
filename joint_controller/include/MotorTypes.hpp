@@ -1,17 +1,20 @@
 #pragma once
 
 #include <cstdint>
-#include <vector>
 
 struct MotorState
 {
   double position_deg = 0.0;
-  double velocity = 0.0;   // optional
-  double current_mA = 0.0;
-  bool   comm_ok = true;
+  double velocity     = 0.0;
+  double current_mA   = 0.0;
+  bool   comm_ok      = true;
 };
 
 struct MotorCommand
 {
-  double goal_position_deg = 0.0;
+  // Current control command (mA)
+  double goal_current_mA   = 0.0;
+
+  // Safety limit (mA)
+  double current_limit_mA  = 200.0;
 };
