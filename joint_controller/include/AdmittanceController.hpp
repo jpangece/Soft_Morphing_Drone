@@ -3,17 +3,22 @@
 #include "MotorTypes.hpp"
 #include <vector>
 #include <cmath>
+#include <algorithm>
 
 class AdmittanceController
 {
 public:
   explicit AdmittanceController(std::size_t n)
     : n_(n),
-      delta_theta_deg_(n, 0.0),
-      delta_theta_d_deg_(n, 0.0),
       tau_ext_f_(n, 0.0),
       position_ref_deg_(n, 0.0)
   {}
+
+  // NOTE:
+  // M, B, K in Current-control based:
+  // K_ : "Virtual Spring Force" (Nm/rad)
+  // B_ : "Virtual Damping" (Nm/(rad/s))
+  // M_ : not using currently
 
   void setParam(double M, double B, double K) { M_ = M; B_ = B; K_ = K; }
   void setDt(double dt) { dt_ = dt; }
@@ -23,57 +28,105 @@ public:
   void setPositionRefDeg(const std::vector<double>& ref)
   { if (ref.size() == n_) position_ref_deg_ = ref; }
 
+  // current safety
+  void setCurrentLimit(double limit_mA) { current_limit_mA_ = limit_mA; }
+
+  // motor torque constant (Nm/A)
+  void setKt(double Kt) { Kt_ = Kt; }
+
+  // low-pass filter alpha for external torque estimate
+  void setAlpha(double alpha) { alpha_ = clamp(alpha, 0.0, 0.999); }
+
+  // output is commands[i].goal_current_mA
   void update(const std::vector<MotorState>& states, std::vector<MotorCommand>& commands)
   {
     if (states.size() != n_ || commands.size() != n_) return;
 
     for (std::size_t i = 0; i < n_; ++i)
     {
-      double goal = position_ref_deg_[i];
+      // ===== reference (deg) =====
+      const double ref_deg = position_ref_deg_[i];
 
+      // ===== measured =====
+      const double pos_deg = states[i].position_deg;
+      const double vel_rad_s = states[i].velocity;
+
+      // ===== position error (rad) =====
+      const double e_rad = deg2rad(pos_deg - ref_deg);
+
+      // ===== external torque estimate from current (Nm) =====
+      // present current_mA -> A -> tau
       const double tau_ext = -states[i].current_mA * mA_to_A_ * Kt_;
       tau_ext_f_[i] = alpha_ * tau_ext_f_[i] + (1.0 - alpha_) * tau_ext;
+
+      // tau_abs <= release_threshold_ : treat as NO External Torque
       const double tau_abs = std::abs(tau_ext_f_[i]);
+      double tau_ext_used = 0.0;
 
-      double delta_rad   = deg2rad(delta_theta_deg_[i]);
-      double delta_d_rad = deg2rad(delta_theta_d_deg_[i]);
-
-      if (tau_abs <= release_threshold_)
+      if (tau_abs >= tau_threshold_)
       {
-        delta_d_rad = 0.0;
-        delta_rad *= decay_factor_1_;
+        tau_ext_used = tau_ext_f_[i] - sign(tau_ext_f_[i]) * tau_threshold_;
       }
-      else if (tau_abs >= tau_threshold_)
+      else if (tau_abs <= release_threshold_)
       {
-        const double tau_eff = tau_ext_f_[i] - sign(tau_ext_f_[i]) * tau_threshold_;
-        const double delta_dd = (tau_eff - B_ * delta_d_rad - K_ * delta_rad) / M_;
-        delta_d_rad += dt_ * delta_dd;
-        delta_rad   += dt_ * delta_d_rad;
+        tau_ext_used = 0.0;
       }
       else
       {
-        delta_d_rad = 0.0;
-        delta_rad *= decay_factor_2_;
+        tau_ext_used = 0.0;
       }
 
-      delta_theta_d_deg_[i] = rad2deg(delta_d_rad);
-      delta_theta_deg_[i]   = rad2deg(delta_rad);
+      // ===== virtual impedance to ref =====
+      const double tau_cmd = (-(K_ * e_rad) - (B_ * vel_rad_s)) - (c_ext_ * tau_ext_used);
 
-      commands[i].goal_position_deg = goal + delta_theta_deg_[i];
+      // ===== torque -> current (mA) =====
+      double I_cmd_mA = (tau_cmd / Kt_) * 1000.0;
+
+      // clamp
+      I_cmd_mA = clamp(I_cmd_mA, -current_limit_mA_, current_limit_mA_);
+
+      // write command
+      commands[i].goal_current_mA = I_cmd_mA;
+      commands[i].current_limit_mA = current_limit_mA_;
     }
   }
+
+  void setExternalComp(double c_ext) { c_ext_ = clamp(c_ext, 0.0, 1.0); }
 
 private:
   std::size_t n_;
 
-  double M_ = 0.05, B_ = 0.5, K_ = 2.0, dt_ = 0.02;
-  double alpha_ = 0.8, Kt_ = 0.354, mA_to_A_ = 0.001;
-  double tau_threshold_ = 0.04, release_threshold_ = 0.008;
-  double decay_factor_1_ = 0.9, decay_factor_2_ = 0.98;
+  // parameters
+  double M_ = 0.05;
+  double B_ = 0.02;
+  double K_ = 0.25;
+  double dt_ = 0.02;
 
-  std::vector<double> delta_theta_deg_, delta_theta_d_deg_, tau_ext_f_, position_ref_deg_;
+  // motor/estimation params
+  double alpha_ = 0.8;
+  double Kt_ = 0.354;
+  double mA_to_A_ = 0.001;
+
+  // thresholds (Nm)
+  double tau_threshold_ = 0.04;
+  double release_threshold_ = 0.008;
+
+  // compliance helper
+  double c_ext_ = 0.5;
+
+  // safety
+  double current_limit_mA_ = 200.0;
+
+  std::vector<double> tau_ext_f_;
+  std::vector<double> position_ref_deg_;
 
   static double deg2rad(double deg) { return deg * M_PI / 180.0; }
-  static double rad2deg(double rad) { return rad * 180.0 / M_PI; }
   static double sign(double x) { return (x > 0) - (x < 0); }
+
+  static double clamp(double x, double lo, double hi)
+  {
+    if (x < lo) return lo;
+    if (x > hi) return hi;
+    return x;
+  }
 };
