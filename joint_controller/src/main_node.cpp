@@ -156,6 +156,38 @@ int main(int argc, char *argv[])
       }
     }
 
+    // ===== Debug: print key telemetry at 1 Hz =====
+    static double t0 = ros::Time::now().toSec();
+    const double now = ros::Time::now().toSec();
+
+    if (now - t0 >= 1.0)
+    {
+      t0 = now;
+
+      // summarize currents
+      double avg_cur = 0.0, max_abs_cur = 0.0;
+      double avg_cmd = 0.0, max_abs_cmd = 0.0;
+
+      for (std::size_t i = 0; i < n; ++i)
+      {
+        avg_cur += states[i].current_mA;
+        max_abs_cur = std::max(max_abs_cur, std::abs(states[i].current_mA));
+
+        avg_cmd += commands[i].goal_current_mA;
+        max_abs_cmd = std::max(max_abs_cmd, std::abs(commands[i].goal_current_mA));
+      }
+      avg_cur /= (n > 0 ? (double)n : 1.0);
+      avg_cmd /= (n > 0 ? (double)n : 1.0);
+
+      ROS_INFO("[DBG] ref0=%.1f deg | pos0=%.1f deg | cur0=%.1f mA | cmd0=%.1f mA || avgCur=%.1f mA max|Cur|=%.1f mA || avgCmd=%.1f mA max|Cmd|=%.1f mA",
+               (n>0? g_position_ref_deg[0] : 0.0),
+               (n>0? states[0].position_deg : 0.0),
+               (n>0? states[0].current_mA : 0.0),
+               (n>0? commands[0].goal_current_mA : 0.0),
+               avg_cur, max_abs_cur,
+               avg_cmd, max_abs_cmd);
+    }
+
     bus.writeAll(commands);
 
     ros::spinOnce();
