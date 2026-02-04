@@ -15,11 +15,31 @@
 // 0 --> 2048
 // 179 --> 4095
 
+
 double goal_position_raw = 45.0;
 double goal_position_handled = 0.0;
 int32_t dxl_goal_position = 0;
 int32_t dxl_position_offset = 2048;
 int32_t op_mode = -1;
+
+// Compliance control params (tune)
+static const double DEG2RAD = 3.141592653589793 / 180.0;
+
+// Spring-damper gains
+double K_spring_Nm_per_rad = 0.25;   // how strong it pulls back
+double D_damper_Nm_per_rads = 0.02;  // how much it resists speed
+
+// Current limit for safety(mA)
+double I_limit_mA = 200.0;
+
+// clamp helper
+static inline double clamp(double x, double lo, double hi)
+{
+  if (x < lo) return lo;
+  if (x > hi) return hi;
+  return x;
+}
+
 
 void set_goal_position(const std_msgs::Float64::ConstPtr &msg)
 {
@@ -94,14 +114,17 @@ int main(int argc, char *argv[])
     }
 
     dxl_wb.torqueOff(1);
-    if (dxl_wb.setPositionControlMode(1))
+
+    // CURRENT CONTROL MODE
+    if (dxl_wb.setCurrentControlMode(1))
     {
-        ROS_INFO("Set position control mode success");
+        ROS_INFO("Set current control mode (ID=1) success");
     }
     else
     {
-        ROS_WARN("Failed to set position control mode");
+        ROS_WARN("Failed to set current control mode (ID=1)");
     }
+
     // torque on
     if (dxl_wb.torqueOn(1))
     {
@@ -132,14 +155,16 @@ int main(int argc, char *argv[])
     }
 
     dxl_wb.torqueOff(2);
-    if (dxl_wb.setPositionControlMode(2))
+
+    if (dxl_wb.setCurrentControlMode(2))
     {
-        ROS_INFO("Set position control mode2 success");
+        ROS_INFO("Set current control mode (ID=2) success");
     }
     else
     {
-        ROS_WARN("Failed to set position control mode2");
+        ROS_WARN("Failed to set current control mode (ID=2)");
     }
+
     // torque on
     if (dxl_wb.torqueOn(2))
     {
@@ -165,31 +190,37 @@ int main(int argc, char *argv[])
 
     while (ros::ok())
     {
+        // Read present position (deg)
         dxl_wb.getRadian(1, &dxl_present_position);
         present_position = rad2deg(dxl_present_position);
-        // ROS_INFO("position: %f deg", present_position);
 
-        dxl_wb.itemRead(1, "Present_Current", &dxl_present_current);
-        present_current = dxl_wb.convertValue2Current(1, dxl_present_current);
-        tau_ext = -present_current * mA_to_A * Kt;
-        tau_ext_f = alpha * tau_ext_f + (1.0 - alpha) * tau_ext;
-        ROS_INFO("tau_ext_f: %f Nm, present_current: %f mA, delta_theta: %f deg, present_position: %f deg", tau_ext_f, present_current, delta_theta, present_position);
-        delta_theta_dd = (tau_ext_f - B * delta_theta_d - K * delta_theta) / M;
-        delta_theta_d += dt * delta_theta_dd;
-        delta_theta += dt * delta_theta_d;
-        // ROS_INFO("delta_theta: %f deg", delta_theta);
+        // Read present velocity (raw -> rad/s)
+        dxl_wb.itemRead(1, "Present_Velocity", &dxl_present_velocity);
+        present_velocity = dxl_wb.convertValue2Velocity(1, dxl_present_velocity);
 
-        if (tau_ext_f > 0.005 || tau_ext_f < -0.005)
-            goal_position_raw = present_position + delta_theta;
+        // Virtual spring-damper to 0 deg 
+        double theta_rad = present_position * DEG2RAD;
+        double omega_rad_s = present_velocity;
 
-        goal_position_handled = handle_position_range(goal_position_raw);
-        dxl_goal_position = get_dxl_position(goal_position_handled);
-        dxl_wb.itemWrite(1, "Goal_Position", dxl_goal_position);
-        dxl_wb.itemWrite(2, "Goal_Position", dxl_goal_position);
-        // ROS_INFO("writing goal position: %d", dxl_goal_position);
+        // desired torque (Nm)
+        double tau_cmd = (-K_spring_Nm_per_rad * theta_rad) - (D_damper_Nm_per_rads * omega_rad_s);
 
-        ros::spinOnce();
-        loop_rate.sleep();
+        // convert to current (A) using motor torque constant
+        double I_cmd_A = tau_cmd / Kt;
+        double I_cmd_mA = I_cmd_A * 1000.0;
+    
+        // clamp current
+        I_cmd_mA = clamp(I_cmd_mA, -I_limit_mA, I_limit_mA);
+
+        // Convert mA
+        int32_t goal_current_value = dxl_wb.convertCurrent2Value(1, (float)I_cmd_mA);
+
+        // Write same current command to both servos
+        dxl_wb.itemWrite(1, "Goal_Current", goal_current_value);
+        dxl_wb.itemWrite(2, "Goal_Current", goal_current_value);
+
+        ROS_INFO("pos=%.2f deg, vel=%.3f rad/s, tau_cmd=%.4f Nm, I_cmd=%.1f mA",
+             present_position, present_velocity, tau_cmd, I_cmd_mA);
     }
     return 0;
 }
