@@ -8,7 +8,6 @@
 #include <vector>
 #include <string>
 #include <cmath>
-#include <cstdio>
 #include <algorithm>
 
 static std::vector<double> g_position_ref_deg;
@@ -37,13 +36,13 @@ int main(int argc, char *argv[])
   double M, B, K;
   int node_rate, admittance_enable;
 
-  // controller params (optional)
+  // controller extra params
   double current_limit_mA, Kt, alpha, c_ext, tau_th, release_th;
 
   nh.param<std::string>("motor/device", device, std::string("/dev/ttyUSB0"));
   nh.param("motor/baud", baud, 3000000);
 
-  // kept for compatibility; DxlBus current mode doesn't use these gains
+  // kept for compatibility
   nh.param("motor/kp", kp, 400);
   nh.param("motor/ki", ki, 0);
   nh.param("motor/kd", kd, 0);
@@ -62,14 +61,13 @@ int main(int argc, char *argv[])
 
   nh.param("node_rate", node_rate, 50);
 
-  // IDs
   std::vector<int> ids_i;
   if (!nh.getParam("motor/ids", ids_i))
   {
     int motor_count;
     nh.param("motor/count", motor_count, 4);
     ids_i.resize(motor_count);
-    for (int i = 0; i < motor_count; ++i) ids_i[i] = i + 1;  // typical Dynamixel IDs start from 1
+    for (int i = 0; i < motor_count; ++i) ids_i[i] = i;
   }
 
   std::vector<uint8_t> ids;
@@ -78,8 +76,8 @@ int main(int argc, char *argv[])
 
   const std::size_t n = ids.size();
   const double dt = 1.0 / static_cast<double>(node_rate);
+  const double DEG2RAD = M_PI / 180.0;
 
-  // Publishers: states
   std::vector<ros::Publisher> state_pubs;
   state_pubs.reserve(n);
   for (std::size_t i = 0; i < n; ++i)
@@ -88,15 +86,9 @@ int main(int argc, char *argv[])
     state_pubs.push_back(nh.advertise<joint_controller::MotorState>(topic, 10));
   }
 
-  // Publisher: command currents (for visual checking)
-  ros::Publisher cmd_pub =
-      nh.advertise<std_msgs::Float64MultiArray>("/motor/goal_current_mA", 10);
+  ros::Subscriber ref_sub = nh.subscribe<std_msgs::Float64MultiArray>(
+      "/motor/position_ref_deg", 10, refCallback);
 
-  // Subscriber: reference positions
-  ros::Subscriber ref_sub =
-      nh.subscribe<std_msgs::Float64MultiArray>("/motor/position_ref_deg", 10, refCallback);
-
-  // Bus + controller
   DxlBus bus(device, static_cast<uint32_t>(baud), ids);
   if (!bus.begin()) return 1;
   bus.configureMotors(kp, ki, kd);
@@ -113,22 +105,16 @@ int main(int argc, char *argv[])
   std::vector<MotorState> states(n);
   std::vector<MotorCommand> commands(n);
 
-  // initial ref: zeros
   bus.readAll(states);
+
   g_position_ref_deg.assign(n, 0.0);
   controller.setPositionRefDeg(g_position_ref_deg);
-
-  const double DEG2RAD = M_PI / 180.0;
-
-  // Debug timer
-  ros::Time last_dbg = ros::Time::now();
 
   ros::Rate rate(node_rate);
   while (ros::ok())
   {
     bus.readAll(states);
 
-    // publish per-motor state topics
     for (std::size_t i = 0; i < n; ++i)
     {
       joint_controller::MotorState msg;
@@ -138,21 +124,19 @@ int main(int argc, char *argv[])
       state_pubs[i].publish(msg);
     }
 
-    // update ref if received
     if (g_ref_received && g_position_ref_deg.size() == n)
     {
       controller.setPositionRefDeg(g_position_ref_deg);
       g_ref_received = false;
     }
 
-    // compute commands
     if (admittance_enable)
     {
       controller.update(states, commands);
     }
     else
     {
-      // fallback: soft spring-to-ref in current space (keeps behavior sane)
+      // fallback: soft spring-to-ref in current space
       for (std::size_t i = 0; i < n; ++i)
       {
         const double ref_deg = g_position_ref_deg[i];
@@ -168,43 +152,6 @@ int main(int argc, char *argv[])
       }
     }
 
-    // publish command currents as one array
-    std_msgs::Float64MultiArray cmd_msg;
-    cmd_msg.data.resize(n);
-    for (std::size_t i = 0; i < n; ++i) cmd_msg.data[i] = commands[i].goal_current_mA;
-    cmd_pub.publish(cmd_msg);
-
-    // ===== 1 Hz DEBUG PRINT (both ROS + stderr) =====
-    ros::Time now = ros::Time::now();
-    if ((now - last_dbg).toSec() >= 1.0)
-    {
-      last_dbg = now;
-
-      // Summaries
-      double max_abs_cmd = 0.0, max_abs_cur = 0.0;
-      for (std::size_t i = 0; i < n; ++i)
-      {
-        max_abs_cmd = std::max(max_abs_cmd, std::abs(commands[i].goal_current_mA));
-        max_abs_cur = std::max(max_abs_cur, std::abs(states[i].current_mA));
-      }
-
-      const double ref0 = (n > 0 ? g_position_ref_deg[0] : 0.0);
-      const double pos0 = (n > 0 ? states[0].position_deg : 0.0);
-      const double vel0 = (n > 0 ? states[0].velocity : 0.0);
-      const double cur0 = (n > 0 ? states[0].current_mA : 0.0);
-      const double cmd0 = (n > 0 ? commands[0].goal_current_mA : 0.0);
-
-      ROS_WARN("[DBG] ref0=%.1f deg pos0=%.1f deg vel0=%.3f rad/s cur0=%.1f mA cmd0=%.1f mA | max|Cur|=%.1f mA max|Cmd|=%.1f mA | enable=%d",
-               ref0, pos0, vel0, cur0, cmd0, max_abs_cur, max_abs_cmd, admittance_enable);
-
-      // Always visible even if ROS console settings are weird
-      std::fprintf(stderr,
-                   "[DBG] ref0=%.1f pos0=%.1f vel0=%.3f cur0=%.1f cmd0=%.1f | max|Cur|=%.1f max|Cmd|=%.1f | enable=%d\n",
-                   ref0, pos0, vel0, cur0, cmd0, max_abs_cur, max_abs_cmd, admittance_enable);
-      std::fflush(stderr);
-    }
-
-    // write to motors
     bus.writeAll(commands);
 
     ros::spinOnce();
