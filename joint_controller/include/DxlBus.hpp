@@ -5,6 +5,7 @@
 #include <ros/ros.h>
 #include <vector>
 #include <string>
+#include <cmath>
 
 class DxlBus
 {
@@ -22,35 +23,45 @@ public:
 
     const char* log = nullptr;
 
-    if (!wb_.addSyncWriteHandler(ids_.front(), "Goal_Position", &log))
-    { ROS_ERROR("addSyncWriteHandler(Goal_Position) failed: %s", log ? log : ""); return false; }
+    // ===== SyncWrite: Goal_Current =====
+    if (!wb_.addSyncWriteHandler(ids_.front(), "Goal_Current", &log))
+    { ROS_ERROR("addSyncWriteHandler(Goal_Current) failed: %s", log ? log : ""); return false; }
 
+    // ===== SyncRead: Present_Position / Present_Velocity / Present_Current =====
     if (!wb_.addSyncReadHandler(ids_.front(), "Present_Position", &log))
     { ROS_ERROR("addSyncReadHandler(Present_Position) failed: %s", log ? log : ""); return false; }
+
+    if (!wb_.addSyncReadHandler(ids_.front(), "Present_Velocity", &log))
+    { ROS_ERROR("addSyncReadHandler(Present_Velocity) failed: %s", log ? log : ""); return false; }
 
     if (!wb_.addSyncReadHandler(ids_.front(), "Present_Current", &log))
     { ROS_ERROR("addSyncReadHandler(Present_Current) failed: %s", log ? log : ""); return false; }
 
-    write_handler_ = 0;
-    read_pos_handler_ = 0;
-    read_cur_handler_ = 1;
+    // Handler indices follow the order we added above
+    write_handler_    = 0; // Goal_Current
+    read_pos_handler_ = 0; // Present_Position
+    read_vel_handler_ = 1; // Present_Velocity
+    read_cur_handler_ = 2; // Present_Current
 
     const std::size_t n = ids_.size();
-    raw_goal_.assign(n, 0);
+    raw_goal_cur_.assign(n, 0);
     raw_pos_.assign(n, 0);
+    raw_vel_.assign(n, 0);
     raw_cur_.assign(n, 0);
     return true;
   }
 
-  bool configureMotors(int kp, int ki, int kd)
+  // kp/ki/kd are not used in current mode, keep signature for compatibility
+  bool configureMotors(int /*kp*/, int /*ki*/, int /*kd*/)
   {
     for (auto id : ids_)
     {
       wb_.torqueOff(id);
-      wb_.itemWrite(id, "Operating_Mode", 3);
-      wb_.itemWrite(id, "Position_P_Gain", kp);
-      wb_.itemWrite(id, "Position_I_Gain", ki);
-      wb_.itemWrite(id, "Position_D_Gain", kd);
+
+      // ===== Current Control Mode =====
+      // 0: Current Control
+      wb_.itemWrite(id, "Operating_Mode", 0);
+
       wb_.torqueOn(id);
     }
     return true;
@@ -65,15 +76,27 @@ public:
     ok &= wb_.syncRead(read_pos_handler_, &log);
     ok &= wb_.getSyncReadData(read_pos_handler_, raw_pos_.data(), &log);
 
+    ok &= wb_.syncRead(read_vel_handler_, &log);
+    ok &= wb_.getSyncReadData(read_vel_handler_, raw_vel_.data(), &log);
+
     ok &= wb_.syncRead(read_cur_handler_, &log);
     ok &= wb_.getSyncReadData(read_cur_handler_, raw_cur_.data(), &log);
 
     for (std::size_t i = 0; i < ids_.size(); ++i)
     {
       const uint8_t id = ids_[i];
+
+      // Position: raw -> rad -> deg
       const double pos_rad = wb_.convertValue2Radian(id, raw_pos_[i]);
       states[i].position_deg = pos_rad * 180.0 / M_PI;
+
+      // Velocity: raw -> (toolbox conversion) -> rad/s
+      // If your toolbox returns "rev/min" or something else, this is the only line to adjust.
+      states[i].velocity = wb_.convertValue2Velocity(id, raw_vel_[i]);
+
+      // Current: mA
       states[i].current_mA = wb_.convertValue2Current(id, raw_cur_[i]);
+
       states[i].comm_ok = ok;
     }
 
@@ -88,12 +111,17 @@ public:
     for (std::size_t i = 0; i < ids_.size(); ++i)
     {
       const uint8_t id = ids_[i];
-      const double rad = commands[i].goal_position_deg * M_PI / 180.0;
-      raw_goal_[i] = wb_.convertRadian2Value(id, rad);
+
+      // clamp safety
+      double mA = commands[i].goal_current_mA;
+      if (mA >  commands[i].current_limit_mA) mA =  commands[i].current_limit_mA;
+      if (mA < -commands[i].current_limit_mA) mA = -commands[i].current_limit_mA;
+
+      raw_goal_cur_[i] = wb_.convertCurrent2Value(id, (float)mA);
     }
 
     const char* log = nullptr;
-    const bool ok = wb_.syncWrite(write_handler_, raw_goal_.data(), &log);
+    const bool ok = wb_.syncWrite(write_handler_, raw_goal_cur_.data(), &log);
     if (!ok) ROS_WARN_THROTTLE(1.0, "DxlBus writeAll() failed: %s", log ? log : "");
     return ok;
   }
@@ -104,12 +132,10 @@ private:
   std::vector<uint8_t> ids_;
   DynamixelWorkbench wb_;
 
-  bool enable_velocity_ = false;
-
-  uint8_t write_handler_ = 0;
+  uint8_t write_handler_    = 0;
   uint8_t read_pos_handler_ = 0;
+  uint8_t read_vel_handler_ = 0;
   uint8_t read_cur_handler_ = 0;
-  uint8_t read_vel_handler_ = 255;
 
-  std::vector<int32_t> raw_goal_, raw_pos_, raw_cur_, raw_vel_;
+  std::vector<int32_t> raw_goal_cur_, raw_pos_, raw_vel_, raw_cur_;
 };
