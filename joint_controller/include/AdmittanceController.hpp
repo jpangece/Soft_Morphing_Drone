@@ -17,6 +17,7 @@ public:
       release_timer_(n, 0.0)
   {}
 
+  // M not used (kept for compatibility)
   void setParam(double M, double B, double K) { M_ = M; B_return_ = B; K_return_ = K; }
   void setDt(double dt) { dt_ = dt; }
 
@@ -30,27 +31,27 @@ public:
   void setKt(double Kt) { Kt_ = Kt; }
   void setAlpha(double alpha) { alpha_ = clamp(alpha, 0.0, 0.999); }
 
-  // When pushing: soft (low K, low B)
+  // ===== Compatibility function (main_node calls this) =====
+  // This push/return controller does NOT use external torque cancellation,
+  // but we keep the API to avoid breaking build.
+  void setExternalComp(double c_ext) { c_ext_dummy_ = clamp(c_ext, 0.0, 1.0); }
+
+  // ===== push/return tuning =====
   void setPushGains(double K_push, double B_push)
   {
     K_push_ = std::max(0.0, K_push);
     B_push_ = std::max(0.0, B_push);
   }
 
-  // When released, use critical damping (B_return = 2*sqrt(K_return*Mvirt))
   void setReturnGains(double K_return, double B_return)
   {
     K_return_ = std::max(0.0, K_return);
     B_return_ = std::max(0.0, B_return);
   }
 
-  // Hysteresis + hold time to avoid chattering between modes
   void setReleaseHoldTime(double seconds) { release_hold_time_ = std::max(0.0, seconds); }
-
-  // Command smoothing
   void setCmdFilterAlpha(double a) { cmd_alpha_ = clamp(a, 0.0, 0.999); }
 
-  // If close enough AND slow, command 0 current
   void setDeadband(double pos_deadband_deg, double vel_deadband_rad_s)
   {
     pos_deadband_deg_ = std::max(0.0, pos_deadband_deg);
@@ -76,7 +77,6 @@ public:
       const double tau_abs = std::abs(tau_ext_f_[i]);
 
       // ===== push/release mode decision with hysteresis + hold =====
-      // If tau is large: push
       if (tau_abs >= tau_threshold_)
       {
         push_mode_[i] = true;
@@ -84,13 +84,12 @@ public:
       }
       else
       {
-        // tau is small: count time since release
         release_timer_[i] += dt_;
         if (release_timer_[i] >= release_hold_time_)
           push_mode_[i] = false;
       }
 
-      // ===== deadband to prevent tiny oscillation near reference =====
+      // ===== deadband near ref (prevents hunting) =====
       if (std::abs(e_deg) <= pos_deadband_deg_ && std::abs(vel_rad_s) <= vel_deadband_rad_s_)
       {
         I_cmd_f_mA_[i] = 0.0;
@@ -103,7 +102,7 @@ public:
       const double K_use = push_mode_[i] ? K_push_ : K_return_;
       const double B_use = push_mode_[i] ? B_push_ : B_return_;
 
-      // ===== core control: pure spring-damper to ref =====
+      // ===== spring-damper to ref (no tau_ext cancellation) =====
       const double tau_cmd = (-(K_use * e_rad) - (B_use * vel_rad_s));
 
       // torque -> current (mA)
@@ -125,39 +124,40 @@ private:
 
   double M_ = 0.05;
 
-  // ===== Return gains (strong) =====
-  // These are the ones you tune for "fast return to zero without oscillation".
-  double K_return_ = 0.35;     // Nm/rad
-  double B_return_ = 0.12;     // Nm/(rad/s)
+  // Return gains
+  double K_return_ = 0.35; 
+  double B_return_ = 0.12; 
 
-  // ===== Push gains (soft) =====
-  // These are the ones you tune for "easy to push by hand".
-  double K_push_   = 0.05;     // Nm/rad
-  double B_push_   = 0.02;     // Nm/(rad/s)
+  // Push gains
+  double K_push_   = 0.05;
+  double B_push_   = 0.02;
 
   double dt_ = 0.02;
 
-  // external torque estimation
+  // external torque estimate
   double alpha_ = 0.85;
   double Kt_ = 0.354;
   double mA_to_A_ = 0.001;
 
-  // thresholds (Nm) for push detection
+  // thresholds for push detection
   double tau_threshold_ = 0.035;
-  double release_threshold_ = 0.010; // kept but not used directly; left for compatibility
+  double release_threshold_ = 0.010; 
 
-  // time to stay in push mode after force disappears (prevents chattering)
-  double release_hold_time_ = 0.20; // seconds
+  // hold time to avoid mode chattering
+  double release_hold_time_ = 0.20;
 
   // safety
   double current_limit_mA_ = 180.0;
 
-  // deadband near ref (prevents tiny hunting)
+  // deadband near ref
   double pos_deadband_deg_ = 0.6;
   double vel_deadband_rad_s_ = 0.20;
 
   // command LPF
   double cmd_alpha_ = 0.6;
+
+  // compatibility placeholder
+  double c_ext_dummy_ = 0.0;
 
   std::vector<double> tau_ext_f_;
   std::vector<double> position_ref_deg_;
