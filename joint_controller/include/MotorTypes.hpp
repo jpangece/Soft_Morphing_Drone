@@ -13,8 +13,8 @@ struct MotorState
 struct MotorCommand
 {
   // Current control command (mA)
-  double goal_current_mA   = 0.0;
+  double goal_current_mA  = 0.0;
 
-  // Safety limit (mA)
-  double current_limit_mA  = 200.0;
+  // Safety clamp used in DxlBus
+  double current_limit_mA = 200.0;
 };

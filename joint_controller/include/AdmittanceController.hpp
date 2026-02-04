@@ -22,6 +22,7 @@ public:
 
   void setParam(double M, double B, double K) { M_ = M; B_ = B; K_ = K; }
   void setDt(double dt) { dt_ = dt; }
+
   void setThreshold(double tau_threshold, double release_threshold)
   { tau_threshold_ = tau_threshold; release_threshold_ = release_threshold; }
 
@@ -36,6 +37,9 @@ public:
 
   // low-pass filter alpha for external torque estimate
   void setAlpha(double alpha) { alpha_ = clamp(alpha, 0.0, 0.999); }
+
+  // external torque compensation [0,1]
+  void setExternalComp(double c_ext) { c_ext_ = clamp(c_ext, 0.0, 1.0); }
 
   // output is commands[i].goal_current_mA
   void update(const std::vector<MotorState>& states, std::vector<MotorCommand>& commands)
@@ -86,17 +90,15 @@ public:
       I_cmd_mA = clamp(I_cmd_mA, -current_limit_mA_, current_limit_mA_);
 
       // write command
-      commands[i].goal_current_mA = I_cmd_mA;
+      commands[i].goal_current_mA  = I_cmd_mA;
       commands[i].current_limit_mA = current_limit_mA_;
     }
   }
 
-  void setExternalComp(double c_ext) { c_ext_ = clamp(c_ext, 0.0, 1.0); }
-
 private:
   std::size_t n_;
 
-  // parameters
+  // parameters (interpretation changed for current control)
   double M_ = 0.05;
   double B_ = 0.02;
   double K_ = 0.25;
