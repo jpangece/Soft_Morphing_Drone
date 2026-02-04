@@ -18,7 +18,8 @@ public:
     if (!wb_.begin(device_.c_str(), baud_))
     { ROS_ERROR("Failed to open %s @ %u", device_.c_str(), baud_); return false; }
 
-    for (auto id : ids_)
+    for (auto id 
+      .: ids_)
       if (!wb_.ping(id)) { ROS_ERROR("Ping failed for ID %u", (unsigned)id); return false; }
 
     const char* log = nullptr;
@@ -63,6 +64,11 @@ public:
       wb_.itemWrite(id, "Operating_Mode", 0);
 
       wb_.torqueOn(id);
+      int32_t mode = -1;
+      if (wb_.itemRead(id, "Operating_Mode", &mode))
+        ROS_INFO("[DxlBus] ID %u Operating_Mode = %d (expect 0 for Current Control)", (unsigned)id, (int)mode);
+      else
+        ROS_WARN("[DxlBus] ID %u failed to read Operating_Mode", (unsigned)id);
     }
     return true;
   }
