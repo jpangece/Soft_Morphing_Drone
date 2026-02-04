@@ -12,13 +12,12 @@ public:
     : n_(n),
       tau_ext_f_(n, 0.0),
       position_ref_deg_(n, 0.0),
-      I_cmd_f_mA_(n, 0.0),
-      push_mode_(n, false),
+      mode_(n, Mode::LATCH),
       release_timer_(n, 0.0)
   {}
 
-  // M not used (kept for compatibility)
-  void setParam(double M, double B, double K) { M_ = M; B_return_ = B; K_return_ = K; }
+  // compatibility
+  void setParam(double M, double B, double K) { (void)M; B_return_ = B; K_return_ = K; }
   void setDt(double dt) { dt_ = dt; }
 
   void setThreshold(double tau_threshold, double release_threshold)
@@ -31,31 +30,33 @@ public:
   void setKt(double Kt) { Kt_ = Kt; }
   void setAlpha(double alpha) { alpha_ = clamp(alpha, 0.0, 0.999); }
 
-  // ===== Compatibility function (main_node calls this) =====
-  // This push/return controller does NOT use external torque cancellation,
-  // but we keep the API to avoid breaking build.
+  // keep API
   void setExternalComp(double c_ext) { c_ext_dummy_ = clamp(c_ext, 0.0, 1.0); }
 
-  // ===== push/return tuning =====
-  void setPushGains(double K_push, double B_push)
-  {
-    K_push_ = std::max(0.0, K_push);
-    B_push_ = std::max(0.0, B_push);
-  }
+  // ===== behavior tuning =====
+  void setPushMode(bool enable_zero_current_push) { push_zero_current_ = enable_zero_current_push; }
 
+  // Return: strong PD to go back fast
   void setReturnGains(double K_return, double B_return)
   {
     K_return_ = std::max(0.0, K_return);
     B_return_ = std::max(0.0, B_return);
   }
 
+  // Mode switching hysteresis
   void setReleaseHoldTime(double seconds) { release_hold_time_ = std::max(0.0, seconds); }
-  void setCmdFilterAlpha(double a) { cmd_alpha_ = clamp(a, 0.0, 0.999); }
 
-  void setDeadband(double pos_deadband_deg, double vel_deadband_rad_s)
+  // Latch: stop controlling near ref to avoid hunting
+  void setLatch(double latch_pos_deg, double latch_vel_rad_s)
   {
-    pos_deadband_deg_ = std::max(0.0, pos_deadband_deg);
-    vel_deadband_rad_s_ = std::max(0.0, vel_deadband_rad_s);
+    latch_pos_deg_ = std::max(0.0, latch_pos_deg);
+    latch_vel_rad_s_ = std::max(0.0, latch_vel_rad_s);
+  }
+
+  // If latched, re-enable RETURN
+  void setUnlatch(double unlatch_pos_deg)
+  {
+    unlatch_pos_deg_ = std::max(0.0, unlatch_pos_deg);
   }
 
   void update(const std::vector<MotorState>& states, std::vector<MotorCommand>& commands)
@@ -71,98 +72,130 @@ public:
       const double e_deg = pos_deg - ref_deg;
       const double e_rad = deg2rad(e_deg);
 
-      // ===== external torque estimate from current (Nm) =====
+      // ----- external torque estimate -----
       const double tau_ext = -states[i].current_mA * mA_to_A_ * Kt_;
       tau_ext_f_[i] = alpha_ * tau_ext_f_[i] + (1.0 - alpha_) * tau_ext;
       const double tau_abs = std::abs(tau_ext_f_[i]);
 
-      // ===== push/release mode decision with hysteresis + hold =====
-      if (tau_abs >= tau_threshold_)
+      const bool near_latch = (std::abs(e_deg) <= latch_pos_deg_) && (std::abs(vel_rad_s) <= latch_vel_rad_s_);
+      const bool far_unlatch = (std::abs(e_deg) >= unlatch_pos_deg_);
+
+      // ----- Mode transitions -----
+      switch (mode_[i])
       {
-        push_mode_[i] = true;
-        release_timer_[i] = 0.0;
-      }
-      else
-      {
-        release_timer_[i] += dt_;
-        if (release_timer_[i] >= release_hold_time_)
-          push_mode_[i] = false;
+        case Mode::PUSH:
+        {
+          // stay in PUSH while force is present
+          if (tau_abs >= tau_threshold_)
+          {
+            release_timer_[i] = 0.0;
+          }
+          else
+          {
+            release_timer_[i] += dt_;
+            if (release_timer_[i] >= release_hold_time_)
+              mode_[i] = Mode::RETURN;
+          }
+        } break;
+
+        case Mode::RETURN:
+        {
+          // if force appears again -> PUSH
+          if (tau_abs >= tau_threshold_)
+          {
+            mode_[i] = Mode::PUSH;
+            release_timer_[i] = 0.0;
+          }
+          else if (near_latch)
+          {
+            // reached reference region -> LATCH
+            mode_[i] = Mode::LATCH;
+          }
+        } break;
+
+        case Mode::LATCH:
+        {
+          // if drifts far -> leave latch
+          if (tau_abs >= tau_threshold_)
+          {
+            mode_[i] = Mode::PUSH;
+            release_timer_[i] = 0.0;
+          }
+          else if (far_unlatch)
+          {
+            mode_[i] = Mode::RETURN;
+          }
+        } break;
       }
 
-      // ===== deadband near ref (prevents hunting) =====
-      if (std::abs(e_deg) <= pos_deadband_deg_ && std::abs(vel_rad_s) <= vel_deadband_rad_s_)
+      // ----- Output by mode -----
+      if (mode_[i] == Mode::PUSH)
       {
-        I_cmd_f_mA_[i] = 0.0;
+        // Most compliant: command 0 current
+        if (push_zero_current_)
+        {
+          commands[i].goal_current_mA  = 0.0;
+          commands[i].current_limit_mA = current_limit_mA_;
+          continue;
+        }
+      }
+
+      if (mode_[i] == Mode::LATCH)
+      {
+        // key: no hunting
         commands[i].goal_current_mA  = 0.0;
         commands[i].current_limit_mA = current_limit_mA_;
         continue;
       }
 
-      // ===== choose gains by mode =====
-      const double K_use = push_mode_[i] ? K_push_ : K_return_;
-      const double B_use = push_mode_[i] ? B_push_ : B_return_;
-
-      // ===== spring-damper to ref (no tau_ext cancellation) =====
-      const double tau_cmd = (-(K_use * e_rad) - (B_use * vel_rad_s));
-
-      // torque -> current (mA)
+      // Mode::RETURN (fast, non-oscillatory if B is large enough)
+      const double tau_cmd = (-(K_return_ * e_rad) - (B_return_ * vel_rad_s));
       double I_cmd_mA = (tau_cmd / Kt_) * 1000.0;
 
-      // clamp safety
       I_cmd_mA = clamp(I_cmd_mA, -current_limit_mA_, current_limit_mA_);
 
-      // smooth command
-      I_cmd_f_mA_[i] = cmd_alpha_ * I_cmd_f_mA_[i] + (1.0 - cmd_alpha_) * I_cmd_mA;
-
-      commands[i].goal_current_mA  = I_cmd_f_mA_[i];
+      commands[i].goal_current_mA  = I_cmd_mA;
       commands[i].current_limit_mA = current_limit_mA_;
     }
   }
 
 private:
+  enum class Mode { PUSH, RETURN, LATCH };
+
   std::size_t n_;
 
-  double M_ = 0.05;
-
-  // Return gains
-  double K_return_ = 0.35; 
-  double B_return_ = 0.12; 
-
-  // Push gains
-  double K_push_   = 0.05;
-  double B_push_   = 0.02;
-
+  // control params
+  double K_return_ = 0.45;  
+  double B_return_ = 0.20; 
   double dt_ = 0.02;
 
-  // external torque estimate
+  // estimation
   double alpha_ = 0.85;
   double Kt_ = 0.354;
   double mA_to_A_ = 0.001;
 
-  // thresholds for push detection
-  double tau_threshold_ = 0.035;
-  double release_threshold_ = 0.010; 
+  // push detect thresholds (Nm)
+  double tau_threshold_ = 0.030;
+  double release_threshold_ = 0.010;
 
-  // hold time to avoid mode chattering
-  double release_hold_time_ = 0.20;
+  // mode switching
+  double release_hold_time_ = 0.15;
+  bool   push_zero_current_ = true;
+
+  // latch settings (prevents hunting at ref)
+  double latch_pos_deg_ = 1.0;
+  double latch_vel_rad_s_ = 0.25;
+  double unlatch_pos_deg_ = 3.0;
 
   // safety
   double current_limit_mA_ = 180.0;
-
-  // deadband near ref
-  double pos_deadband_deg_ = 0.6;
-  double vel_deadband_rad_s_ = 0.20;
-
-  // command LPF
-  double cmd_alpha_ = 0.6;
 
   // compatibility placeholder
   double c_ext_dummy_ = 0.0;
 
   std::vector<double> tau_ext_f_;
   std::vector<double> position_ref_deg_;
-  std::vector<double> I_cmd_f_mA_;
-  std::vector<bool>   push_mode_;
+  std::vector<Mode>   mode_;
   std::vector<double> release_timer_;
 
   static double deg2rad(double deg) { return deg * M_PI / 180.0; }
