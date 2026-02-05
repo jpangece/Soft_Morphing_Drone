@@ -32,37 +32,34 @@ Replaced position-based servo control with current-based control and redesigned 
 
 Dynamixel current control directly corresponds to torque control:
 
-```
-tau = Kt * I
-```
-
+$$
+\tau = K_t I
+$$
 
 Where
 
-- `tau` : motor torque (Nm)  
-- `Kt`  : torque constant (Nm/A)  
-- `I`   : motor current (A)
+- $\tau$ : motor torque (Nm)  
+- $K_t$  : torque constant (Nm/A)  
+- $I$    : motor current (A)
 
 This allows implementation of a virtual impedance model:
 
-
-```
-tau = -K * (theta - theta_ref) - B * theta_dot
-```
+$$
+\tau = -K(\theta - \theta_{ref}) - B\dot{\theta}
+$$
 
 which leads to the current command:
 
-```
+$$
 I = \frac{-K(\theta - \theta_{ref}) - B\dot{\theta}}{K_t}
-```
-
-
+$$
 
 This behaves like a virtual spring–damper system around the reference position.
 
-However, in a real geared servo system with backlash, friction, and sensor quantization, continuously applying this restoring torque near the reference causes the torque direction to flip repeatedly as the error sign changes, producing a limit-cycle oscillation.
+However, in a real geared servo system with backlash, friction, and sensor quantization, continuously applying this restoring torque near $\theta \approx \theta_{ref}$ causes the torque direction to flip repeatedly as the error sign changes, producing a limit-cycle oscillation.
 
 The key insight was that **holding torque near the reference must be removed**, rather than tuned.
+
 
 ---
 
