@@ -23,8 +23,41 @@ Replaced position-based servo control with current-based control and redesigned 
 ### Root Causes
 
 - Position mode inherently enforces holding torque, preventing backdrivability.
-- In current mode, continuously applying corrective torque at the reference creates limit-cycle oscillation due to mechanical backlash.
+- In current mode, continuously applying corrective torque at the reference creates limit-cycle oscillation due to mechanical backlash and quantization.
 - External force estimation using Present_Current mixes commanded current with real disturbance, degrading detection reliability.
+
+---
+
+### Mathematical and Physical Background
+
+Dynamixel current control directly corresponds to torque control:
+
+\[
+\tau = K_t \cdot I
+\]
+
+where  
+\(\tau\) is motor torque,  
+\(K_t\) is the torque constant,  
+\(I\) is the motor current.
+
+This allows implementation of a virtual impedance model:
+
+\[
+\tau = -K(\theta - \theta_{ref}) - B\dot{\theta}
+\]
+
+which leads to the current command:
+
+\[
+I = \frac{-K(\theta - \theta_{ref}) - B\dot{\theta}}{K_t}
+\]
+
+This model behaves like a virtual spring–damper system around the reference position.
+
+However, in a real geared servo system with backlash, friction, and sensor quantization, continuously applying this restoring torque near \(\theta \approx \theta_{ref}\) causes the torque direction to flip repeatedly as the error sign changes, producing a limit-cycle oscillation.
+
+The key insight was that **holding torque near the reference must be removed**, rather than tuned.
 
 ---
 
@@ -37,18 +70,21 @@ Implemented a state-based controller with three implicit behaviors:
    - Enables smooth manual rotation with minimal resistance.
 
 2. **Return behavior (fast recovery)**
-   - When external push stops, a PD current controller drives the servo back to zero quickly.
+   - When external push stops, a PD current controller drives the servo back to zero:
+     \[
+     I = \frac{-K(\theta - \theta_{ref}) - B\dot{\theta}}{K_t}
+     \]
 
 3. **Latch behavior near zero (oscillation prevention)**
    - When the position crosses or approaches zero, current is set to zero.
-   - Prevents continuous holding torque and eliminates oscillation.
+   - Prevents continuous holding torque and eliminates limit-cycle oscillation.
    - Controller reactivates only if the arm drifts far from zero.
 
 ---
 
 ### Key Architectural Changes
 
-- Switched Dynamixel Operating Mode from **Position Control** to **Current Control**.
+- Switched Dynamixel Operating Mode from Position Control to Current Control.
 - Replaced `Goal_Position` SyncWrite with `Goal_Current`.
 - Removed continuous holding behavior near reference.
 - Replaced Present_Current-based push detection with kinematic detection (error growth + velocity).
@@ -61,4 +97,4 @@ Implemented a state-based controller with three implicit behaviors:
 - The arm can be pushed smoothly by hand (high compliance).
 - Upon release, the arm quickly returns to the zero position.
 - No oscillation or hunting occurs near zero.
-- Stable and predictable behavior suitable for soft–active morphing mechanism.
+- Behavior matches the physical characteristics required for soft–active morphing mechanisms.
