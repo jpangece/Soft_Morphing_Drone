@@ -32,30 +32,35 @@ Replaced position-based servo control with current-based control and redesigned 
 
 Dynamixel current control directly corresponds to torque control:
 
-\[
-\tau = K_t \cdot I
-\]
+```
+tau = Kt * I
+```
 
-where  
-\(\tau\) is motor torque,  
-\(K_t\) is the torque constant,  
-\(I\) is the motor current.
+
+Where
+
+- `tau` : motor torque (Nm)  
+- `Kt`  : torque constant (Nm/A)  
+- `I`   : motor current (A)
 
 This allows implementation of a virtual impedance model:
 
-\[
-\tau = -K(\theta - \theta_{ref}) - B\dot{\theta}
-\]
+
+```
+tau = -K * (theta - theta_ref) - B * theta_dot
+```
 
 which leads to the current command:
 
-\[
+```
 I = \frac{-K(\theta - \theta_{ref}) - B\dot{\theta}}{K_t}
-\]
+```
 
-This model behaves like a virtual spring–damper system around the reference position.
 
-However, in a real geared servo system with backlash, friction, and sensor quantization, continuously applying this restoring torque near \(\theta \approx \theta_{ref}\) causes the torque direction to flip repeatedly as the error sign changes, producing a limit-cycle oscillation.
+
+This behaves like a virtual spring–damper system around the reference position.
+
+However, in a real geared servo system with backlash, friction, and sensor quantization, continuously applying this restoring torque near the reference causes the torque direction to flip repeatedly as the error sign changes, producing a limit-cycle oscillation.
 
 The key insight was that **holding torque near the reference must be removed**, rather than tuned.
 
@@ -65,19 +70,19 @@ The key insight was that **holding torque near the reference must be removed**, 
 
 Implemented a state-based controller with three implicit behaviors:
 
-1. **Push behavior (compliance)**
+1. Push behavior (compliance)
    - When the user pushes the arm (detected via error growth and velocity), commanded current is set to zero.
    - Enables smooth manual rotation with minimal resistance.
 
-2. **Return behavior (fast recovery)**
+2. Return behavior (fast recovery)
    - When external push stops, a PD current controller drives the servo back to zero:
-     \[
-     I = \frac{-K(\theta - \theta_{ref}) - B\dot{\theta}}{K_t}
-     \]
+     ```
+     I = [ -K * (theta - theta_ref) - B * theta_dot ] / Kt
+     ```
 
-3. **Latch behavior near zero (oscillation prevention)**
+3. Latch behavior near zero (oscillation prevention)
    - When the position crosses or approaches zero, current is set to zero.
-   - Prevents continuous holding torque and eliminates limit-cycle oscillation.
+   - Prevents continuous holding torque and eliminates oscillation.
    - Controller reactivates only if the arm drifts far from zero.
 
 ---
@@ -98,3 +103,4 @@ Implemented a state-based controller with three implicit behaviors:
 - Upon release, the arm quickly returns to the zero position.
 - No oscillation or hunting occurs near zero.
 - Behavior matches the physical characteristics required for soft–active morphing mechanisms.
+
